@@ -19,27 +19,6 @@ Code review is the bottleneck of most engineering teams: a senior engineer's tim
 
 If you apply the same human-driven review process to all three, you burn senior bandwidth on trivial PRs **and** you also fail to give risky PRs the careful attention they deserve.
 
-### System overview
-
-```mermaid
-flowchart LR
-    Dev([Developer]):::actor -->|opens PR| GH[(GitHub PR)]:::ext
-    GH -->|"fetch diff (REST API)"| Agent[HITL Agent<br/>LangGraph]:::core
-    Agent -->|LLM call| LLM[(OpenRouter LLM<br/>GPT-4o-mini)]:::ext
-    LLM -->|structured review<br/>+ confidence| Agent
-    Agent <-->|"interrupt() / Command(resume)<br/>low + medium confidence"| Reviewer([Human reviewer<br/>terminal / Streamlit UI]):::actor
-    Agent -->|"post review comment<br/>(REST API)"| GH
-    Agent -->|"every step → 1 row<br/>(structured)"| Audit[(audit_events<br/>SQLite)]:::store
-    Audit -->|"replay tool"| Reviewer
-
-    classDef actor fill:#dbeafe,stroke:#1e3a8a,color:#1e3a8a;
-    classDef core fill:#dcfce7,stroke:#14532d,color:#14532d;
-    classDef ext fill:#fef3c7,stroke:#78350f,color:#78350f;
-    classDef store fill:#fee2e2,stroke:#7f1d1d,color:#7f1d1d;
-```
-
-Three external systems (GitHub, OpenRouter, the human) plus one durable store (SQLite). The Agent is the LangGraph state machine you build through the four exercises.
-
 ### The HITL solution
 
 This lab builds an agent that auto-triages every PR:
