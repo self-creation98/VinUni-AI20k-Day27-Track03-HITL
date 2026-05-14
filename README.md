@@ -34,20 +34,15 @@ Every step writes a row to a structured audit table — every routing decision, 
 
 ```mermaid
 flowchart TD
-    Start([PR opened on GitHub]) --> Fetch[fetch_pr<br/>via REST API]
-    Fetch --> Analyze[analyze<br/>LLM → structured PRAnalysis + confidence]
-    Analyze --> Route{route by<br/>confidence}
-    Route -- "≥ 85%" --> AutoApprove[auto_approve]
-    Route -- "60 – 85%" --> HumanApproval["human_approval<br/>interrupt()"]
-    Route -- "< 60%" --> Escalate["escalate<br/>interrupt() + questions"]
-    HumanApproval -- "approve / reject / edit" --> Commit[commit]
-    Escalate -- "answers" --> Synth[synthesize<br/>LLM refine with answers]
+    Fetch[fetch_pr] --> Analyze[analyze]
+    Analyze --> Route{confidence}
+    Route -- "≥ 85%" --> Auto[auto_approve]
+    Route -- "60–85%" --> Human["human_approval<br/>(interrupt)"]
+    Route -- "< 60%" --> Escalate["escalate<br/>(interrupt)"]
+    Escalate --> Synth[synthesize]
+    Auto --> Commit[commit]
+    Human --> Commit
     Synth --> Commit
-    AutoApprove --> Commit
-    Commit -- "approve OR escalated path" --> PostComment[POST review comment<br/>to GitHub]
-    Commit -- "reject" --> SkipPost[skip post]
-    PostComment --> END([END])
-    SkipPost --> END
 ```
 
 Every node also writes one row to `audit_events`. The graph state is persisted by `AsyncSqliteSaver`, so an interrupted session can resume from exactly where it stopped — even after the process is killed.
