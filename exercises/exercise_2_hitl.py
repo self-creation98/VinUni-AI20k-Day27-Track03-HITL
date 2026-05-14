@@ -31,23 +31,33 @@ console = Console()
 
 
 def node_fetch_pr(state: ReviewState) -> dict:
-    pr = fetch_pr(state["pr_url"])
+    console.print("[cyan]→ fetch_pr[/cyan]")
+    with console.status("[dim]Fetching PR from GitHub...[/dim]"):
+        pr = fetch_pr(state["pr_url"])
+    console.print(f"  [green]✓[/green] {len(pr.files_changed)} files, head {pr.head_sha[:7]}")
     return {"pr_title": pr.title, "pr_diff": pr.diff, "pr_files": pr.files_changed, "pr_head_sha": pr.head_sha}
 
 
 def node_analyze(state: ReviewState) -> dict:
+    console.print("[cyan]→ analyze[/cyan]")
     llm = get_llm().with_structured_output(PRAnalysis)
-    return {"analysis": llm.invoke([
-        {"role": "system", "content": "Senior reviewer. Structured output."},
-        {"role": "user", "content": f"Title: {state['pr_title']}\nDiff:\n{state['pr_diff']}"},
-    ])}
+    with console.status("[dim]LLM reviewing the diff...[/dim]"):
+        analysis = llm.invoke([
+            {"role": "system", "content": "Senior reviewer. Structured output."},
+            {"role": "user", "content": f"Title: {state['pr_title']}\nDiff:\n{state['pr_diff']}"},
+        ])
+    console.print(f"  [green]✓[/green] confidence={analysis.confidence:.0%}, {len(analysis.comments)} comment(s)")
+    return {"analysis": analysis}
 
 
 def node_route(state: ReviewState) -> dict:
+    console.print("[cyan]→ route[/cyan]")
     c = state["analysis"].confidence
-    if c >= AUTO_APPROVE_THRESHOLD: return {"decision": "auto_approve"}
-    if c < ESCALATE_THRESHOLD:      return {"decision": "escalate"}
-    return {"decision": "human_approval"}
+    if c >= AUTO_APPROVE_THRESHOLD: decision = "auto_approve"
+    elif c < ESCALATE_THRESHOLD:    decision = "escalate"
+    else:                           decision = "human_approval"
+    console.print(f"  [green]✓[/green] decision=[bold]{decision}[/bold] (confidence={c:.0%})")
+    return {"decision": decision}
 
 
 def node_human_approval(state: ReviewState) -> dict:
@@ -124,9 +134,13 @@ def main() -> None:
     parser.add_argument("--pr", required=True)
     args = parser.parse_args()
 
+    console.rule("[bold]Exercise 2 — HITL with interrupt()[/bold]")
+    console.print(f"[dim]PR: {args.pr}[/dim]\n")
+
     app = build_graph()
     thread_id = str(uuid.uuid4())
     cfg = {"configurable": {"thread_id": thread_id}}
+    console.print(f"[dim]thread_id = {thread_id}[/dim]\n")
 
     result = app.invoke({"pr_url": args.pr, "thread_id": thread_id}, cfg)
 

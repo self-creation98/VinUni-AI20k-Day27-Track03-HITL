@@ -28,7 +28,10 @@ console = Console()
 
 
 def node_fetch_pr(state: ReviewState) -> dict:
-    pr = fetch_pr(state["pr_url"])
+    console.print("[cyan]→ fetch_pr[/cyan]")
+    with console.status("[dim]Fetching PR from GitHub...[/dim]"):
+        pr = fetch_pr(state["pr_url"])
+    console.print(f"  [green]✓[/green] {len(pr.files_changed)} files, head {pr.head_sha[:7]}")
     return {
         "pr_title": pr.title, "pr_diff": pr.diff,
         "pr_files": pr.files_changed, "pr_head_sha": pr.head_sha,
@@ -36,14 +39,19 @@ def node_fetch_pr(state: ReviewState) -> dict:
 
 
 def node_analyze(state: ReviewState) -> dict:
+    console.print("[cyan]→ analyze[/cyan]")
     # TODO: call the LLM with structured output PRAnalysis.
     # Hint:  llm = get_llm().with_structured_output(PRAnalysis)
     #        analysis = llm.invoke([...])
     #        return {"analysis": analysis}
+    # When implemented, wrap the call in:
+    #        with console.status("[dim]LLM thinking...[/dim]"):
+    #            analysis = llm.invoke([...])
     raise NotImplementedError("Implement node_analyze")
 
 
 def node_route(state: ReviewState) -> dict:
+    console.print("[cyan]→ route[/cyan]")
     # TODO: read state["analysis"].confidence and return
     #       {"decision": "auto_approve" | "human_approval" | "escalate"}
     # Thresholds provided: AUTO_APPROVE_THRESHOLD (0.85) and ESCALATE_THRESHOLD (0.60).
@@ -51,17 +59,17 @@ def node_route(state: ReviewState) -> dict:
 
 
 def node_auto_approve(state: ReviewState) -> dict:
-    console.print("[green]AUTO APPROVE[/green]")
+    console.print("[green]✓ AUTO APPROVE[/green] — high confidence, no human needed")
     return {"final_action": "auto_approved"}
 
 
 def node_human_approval(state: ReviewState) -> dict:
-    console.print("[yellow]HUMAN APPROVAL (placeholder — exercise 2)[/yellow]")
+    console.print("[yellow]✓ HUMAN APPROVAL[/yellow] — placeholder, exercise 2 will pause here")
     return {"final_action": "pending_human_approval"}
 
 
 def node_escalate(state: ReviewState) -> dict:
-    console.print("[red]ESCALATE (placeholder — exercise 3)[/red]")
+    console.print("[red]✓ ESCALATE[/red] — placeholder, exercise 3 will ask the reviewer questions")
     return {"final_action": "pending_escalation"}
 
 
@@ -81,8 +89,12 @@ def main() -> None:
     parser.add_argument("--pr", required=True)
     args = parser.parse_args()
 
+    console.rule("[bold]Exercise 1 — confidence routing[/bold]")
+    console.print(f"[dim]PR: {args.pr}[/dim]\n")
+
     app = build_graph()
     final = app.invoke({"pr_url": args.pr})
+
     console.rule("Final")
     console.print(f"confidence = {final['analysis'].confidence:.0%}")
     console.print(f"action     = {final.get('final_action')}")

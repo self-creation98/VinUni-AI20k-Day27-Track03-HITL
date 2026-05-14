@@ -68,8 +68,11 @@ async def audit(state, entry: AuditEntry) -> None:
 
 # ─── Reference example — read this carefully ───────────────────────────────
 async def node_fetch_pr(state):
+    console.print("[cyan]→ fetch_pr[/cyan]")
     t0 = time.monotonic()
-    pr = fetch_pr(state["pr_url"])
+    with console.status("[dim]Fetching PR from GitHub...[/dim]"):
+        pr = fetch_pr(state["pr_url"])
+    console.print(f"  [green]✓[/green] {len(pr.files_changed)} files, head {pr.head_sha[:7]}")
     # We've only fetched the diff, not analyzed it. So:
     #   - confidence is unknown → 0.0
     #   - risk_level can't be derived from confidence yet → "med" as neutral default
@@ -95,17 +98,21 @@ async def node_fetch_pr(state):
 
 
 async def node_analyze(state):
+    console.print("[cyan]→ analyze[/cyan]")
     t0 = time.monotonic()
     llm = get_llm().with_structured_output(PRAnalysis)
-    a: PRAnalysis = await llm.ainvoke([
-        {"role": "system", "content": "Senior reviewer. Structured output."},
-        {"role": "user", "content": f"Title: {state['pr_title']}\nDiff:\n{state['pr_diff']}"},
-    ])
+    with console.status("[dim]LLM reviewing the diff...[/dim]"):
+        a: PRAnalysis = await llm.ainvoke([
+            {"role": "system", "content": "Senior reviewer. Structured output."},
+            {"role": "user", "content": f"Title: {state['pr_title']}\nDiff:\n{state['pr_diff']}"},
+        ])
+    console.print(f"  [green]✓[/green] confidence={a.confidence:.0%}, {len(a.comments)} comment(s)")
     # TODO: build and emit an AuditEntry for this step. Use the LLM's output `a`.
     return {"analysis": a}
 
 
 async def node_route(state):
+    console.print("[cyan]→ route[/cyan]")
     t0 = time.monotonic()
     c = state["analysis"].confidence
     if c >= AUTO_APPROVE_THRESHOLD:
@@ -114,6 +121,7 @@ async def node_route(state):
         decision = "escalate"
     else:
         decision = "human_approval"
+    console.print(f"  [green]✓[/green] decision=[bold]{decision}[/bold] (confidence={c:.0%})")
     # TODO: emit an AuditEntry — this is the first row where `decision` is real.
     return {"decision": decision}
 
@@ -176,13 +184,16 @@ async def node_escalate(state):
 
 
 async def node_synthesize(state):
+    console.print("[cyan]→ synthesize[/cyan]")
     t0 = time.monotonic()
     qa = "\n".join(f"Q: {q}\nA: {a}" for q, a in (state.get("escalation_answers") or {}).items())
     llm = get_llm().with_structured_output(PRAnalysis)
-    refined: PRAnalysis = await llm.ainvoke([
-        {"role": "system", "content": "Refine review with reviewer answers."},
-        {"role": "user", "content": f"Diff:\n{state['pr_diff']}\n\nQ&A:\n{qa}"},
-    ])
+    with console.status("[dim]LLM refining review with reviewer answers...[/dim]"):
+        refined: PRAnalysis = await llm.ainvoke([
+            {"role": "system", "content": "Refine review with reviewer answers."},
+            {"role": "user", "content": f"Diff:\n{state['pr_diff']}\n\nQ&A:\n{qa}"},
+        ])
+    console.print(f"  [green]✓[/green] refined confidence={refined.confidence:.0%}")
     # TODO: emit an AuditEntry — use the NEW confidence (refined.confidence),
     #       which should be higher than the original analysis.
     return {"analysis": refined, "final_action": "escalated_then_synthesized"}
@@ -224,7 +235,9 @@ def handle_interrupt(payload):
 
 async def run(pr_url: str, thread_id: str | None):
     thread_id = thread_id or str(uuid.uuid4())
-    console.print(f"thread_id = {thread_id}")
+    console.rule("[bold]Exercise 4 — SQLite audit trail[/bold]")
+    console.print(f"[dim]PR: {pr_url}[/dim]")
+    console.print(f"[dim]thread_id = {thread_id}[/dim]\n")
 
     async with AsyncSqliteSaver.from_conn_string(db_path()) as cp:
         await cp.setup()
@@ -236,8 +249,9 @@ async def run(pr_url: str, thread_id: str | None):
             payload = result["__interrupt__"][0].value
             result = await app.ainvoke(Command(resume=handle_interrupt(payload)), cfg)
 
-        console.print(f"final = {result.get('final_action')}")
-        console.print(f"Replay: uv run python -m audit.replay --thread {thread_id}")
+        console.rule("Final")
+        console.print(f"final_action = {result.get('final_action')}")
+        console.print(f"\n[dim]Replay:[/dim] uv run python -m audit.replay --thread {thread_id}")
 
 
 def main():

@@ -30,27 +30,37 @@ console = Console()
 
 
 def node_fetch_pr(state):
-    pr = fetch_pr(state["pr_url"])
+    console.print("[cyan]→ fetch_pr[/cyan]")
+    with console.status("[dim]Fetching PR from GitHub...[/dim]"):
+        pr = fetch_pr(state["pr_url"])
+    console.print(f"  [green]✓[/green] {len(pr.files_changed)} files, head {pr.head_sha[:7]}")
     return {"pr_title": pr.title, "pr_diff": pr.diff, "pr_files": pr.files_changed, "pr_head_sha": pr.head_sha}
 
 
 def node_analyze(state):
+    console.print("[cyan]→ analyze[/cyan]")
     llm = get_llm().with_structured_output(PRAnalysis)
-    return {"analysis": llm.invoke([
-        {"role": "system", "content": (
-            "Senior reviewer. Structured output. "
-            # TODO: add an instruction: if confidence < 60%, populate escalation_questions
-            # with 2–4 specific, context-rich questions (reference which file/section in the diff).
-        )},
-        {"role": "user", "content": f"Title: {state['pr_title']}\nDiff:\n{state['pr_diff']}"},
-    ])}
+    with console.status("[dim]LLM reviewing the diff...[/dim]"):
+        analysis = llm.invoke([
+            {"role": "system", "content": (
+                "Senior reviewer. Structured output. "
+                # TODO: add an instruction: if confidence < 60%, populate escalation_questions
+                # with 2–4 specific, context-rich questions (reference which file/section in the diff).
+            )},
+            {"role": "user", "content": f"Title: {state['pr_title']}\nDiff:\n{state['pr_diff']}"},
+        ])
+    console.print(f"  [green]✓[/green] confidence={analysis.confidence:.0%}, {len(analysis.escalation_questions)} question(s)")
+    return {"analysis": analysis}
 
 
 def node_route(state):
+    console.print("[cyan]→ route[/cyan]")
     c = state["analysis"].confidence
-    if c >= AUTO_APPROVE_THRESHOLD: return {"decision": "auto_approve"}
-    if c < ESCALATE_THRESHOLD:      return {"decision": "escalate"}
-    return {"decision": "human_approval"}
+    if c >= AUTO_APPROVE_THRESHOLD: decision = "auto_approve"
+    elif c < ESCALATE_THRESHOLD:    decision = "escalate"
+    else:                           decision = "human_approval"
+    console.print(f"  [green]✓[/green] decision=[bold]{decision}[/bold] (confidence={c:.0%})")
+    return {"decision": decision}
 
 
 def node_escalate(state: ReviewState) -> dict:
@@ -122,11 +132,19 @@ def build_graph():
 def handle_interrupt(payload):
     kind = payload["kind"]
     if kind == "approval_request":
-        console.print(Panel.fit(payload["summary"], title=f"Approve? conf={payload['confidence']:.0%}"))
+        console.print(Panel.fit(
+            payload["summary"],
+            title=f"Approve? conf={payload['confidence']:.0%}",
+            border_style="green",
+        ))
         choice = console.input("approve/reject/edit? ").strip().lower()
         return {"choice": choice, "feedback": console.input("Feedback: ").strip()}
     if kind == "escalation":
-        console.print(Panel.fit(payload["summary"], title=f"Escalation conf={payload['confidence']:.0%}"))
+        console.print(Panel.fit(
+            payload["summary"],
+            title=f"Escalation conf={payload['confidence']:.0%}",
+            border_style="yellow",
+        ))
         return {q: console.input(f"Q: {q}\nA: ").strip() for q in payload["questions"]}
     raise ValueError(kind)
 
@@ -135,13 +153,23 @@ def main():
     load_dotenv()
     p = argparse.ArgumentParser(); p.add_argument("--pr", required=True)
     args = p.parse_args()
+
+    console.rule("[bold]Exercise 3 — escalation with reviewer Q&A[/bold]")
+    console.print(f"[dim]PR: {args.pr}[/dim]\n")
+
     app = build_graph()
     thread_id = str(uuid.uuid4())
     cfg = {"configurable": {"thread_id": thread_id}}
+    console.print(f"[dim]thread_id = {thread_id}[/dim]\n")
+
     result = app.invoke({"pr_url": args.pr, "thread_id": thread_id}, cfg)
     while "__interrupt__" in result:
         result = app.invoke(Command(resume=handle_interrupt(result["__interrupt__"][0].value)), cfg)
+
+    console.rule("Final")
     console.print(f"final_action = {result.get('final_action')}")
+    if "analysis" in result:
+        console.print(f"final confidence = {result['analysis'].confidence:.0%}")
 
 
 if __name__ == "__main__":
