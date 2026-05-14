@@ -4,9 +4,9 @@ Usage:
     uv run python -m audit.replay --thread <thread_id>
     uv run python -m audit.replay --list                # list recent threads
 
-The script reads `audit_events` (human-readable timeline) and optionally
-cross-references LangGraph checkpoints so you can see *exactly* what the
-graph state looked like when each event was emitted.
+The script reads `audit_events` (human-readable timeline). The LangGraph
+SqliteSaver checkpoint tables live in the same .db file but are queried
+separately by the LangGraph runtime, not by this tool.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ import asyncio
 from rich.console import Console
 from rich.table import Table
 
-from common.db import pg_pool, replay_events
+from common.db import db_conn, replay_events
 
 
 RISK_COLOR = {"low": "green", "med": "yellow", "high": "red"}
@@ -25,8 +25,8 @@ RISK_COLOR = {"low": "green", "med": "yellow", "high": "red"}
 
 async def list_threads() -> None:
     console = Console()
-    async with pg_pool() as pool, pool.connection() as conn, conn.cursor() as cur:
-        await cur.execute(
+    async with db_conn() as conn:
+        async with conn.execute(
             """
             SELECT thread_id,
                    pr_url,
@@ -39,8 +39,8 @@ async def list_threads() -> None:
              ORDER BY MAX(timestamp) DESC
              LIMIT 25
             """
-        )
-        rows = await cur.fetchall()
+        ) as cur:
+            rows = await cur.fetchall()
 
     table = Table(title="Recent review sessions")
     for col in ("thread_id", "pr_url", "started", "last_event", "worst_risk", "events"):
@@ -59,8 +59,7 @@ async def list_threads() -> None:
 
 async def replay(thread_id: str) -> None:
     console = Console()
-    async with pg_pool() as pool:
-        events = await replay_events(pool, thread_id)
+    events = await replay_events(thread_id)
 
     if not events:
         console.print(f"[red]No events found for thread {thread_id}[/red]")

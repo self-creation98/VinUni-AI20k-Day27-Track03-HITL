@@ -5,7 +5,7 @@ A 2-hour lab that builds a human-in-the-loop pull-request review agent in **Lang
 > 1. Agent reads a PR, analyzes code changes, proposes review comments.
 > 2. Confidence ~72% → show diff + reasoning → user approves → agent commits the review.
 > 3. Confidence ~58% → escalate: show context + specific questions for the reviewer.
-> 4. Every interaction is written to a PostgreSQL audit trail; full sessions can be replayed.
+> 4. Every interaction is written to a SQLite audit trail; full sessions can be replayed.
 
 Students complete **4 exercises** (`exercises/`) that together build the full system. Each exercise has a runnable skeleton with `# TODO:` markers — your job is to fill them in.
 
@@ -26,14 +26,12 @@ Thresholds live in `common/schemas.py` (`AUTO_APPROVE_THRESHOLD = 0.85`, `ESCALA
 ├── README.md                # this file — the only documentation
 ├── pyproject.toml
 ├── .env.example
-├── docker-compose.yml       # Postgres for checkpointer + audit
-├── start_all.sh             # bring up Postgres
 │
 ├── common/                  # shared utilities — provided, don't modify
 │   ├── llm.py               # ChatOpenAI factory (OpenRouter)
 │   ├── github.py            # `gh` CLI wrapper: fetch_pr / post_review_comment
-│   ├── db.py                # async connection pool + write_audit_event
-│   └── schemas.py           # ReviewState (TypedDict) + PRAnalysis (Pydantic)
+│   ├── db.py                # aiosqlite connection + write_audit_event
+│   └── schemas.py           # ReviewState (TypedDict) + PRAnalysis + AuditEntry (Pydantic)
 │
 ├── exercises/               # YOUR WORK — skeleton code with TODOs
 │   ├── exercise_1_confidence.py
@@ -50,10 +48,11 @@ Thresholds live in `common/schemas.py` (`AUTO_APPROVE_THRESHOLD = 0.85`, `ESCALA
 
 - Python 3.11+
 - [uv](https://docs.astral.sh/uv/) package manager
-- Docker (for Postgres — only needed for exercise 4)
 - [`gh` CLI](https://cli.github.com/) — binary only, you'll auth via `GITHUB_TOKEN` below
 - An [OpenRouter](https://openrouter.ai/keys) API key (free tier has $1 credit)
 - A GitHub Personal Access Token — see next section
+
+No Docker, no Postgres install. Audit + checkpointer state both live in a single SQLite file (`./hitl_audit.db`) created automatically on first run.
 
 ## Get a GitHub Personal Access Token (PAT)
 
@@ -82,12 +81,11 @@ The agent shells out to the `gh` CLI both to **read PR diffs** and to **post rev
 
 ```bash
 git clone <lab-repo-url> && cd Day27-Track3-HITL
-./start_all.sh                              # docker compose up Postgres (needed for exercise 4 only)
 uv sync                                     # install Python deps
 cp .env.example .env && $EDITOR .env        # set OPENROUTER_API_KEY and GITHUB_TOKEN
 ```
 
-Exercises 1–3 don't need Postgres — you can skip `./start_all.sh` until exercise 4.
+The SQLite file `hitl_audit.db` is created on demand when exercise 4 runs.
 
 ## Demo PRs
 
@@ -145,9 +143,9 @@ uv run python exercises/exercise_3_escalation.py --pr https://github.com/VinUni-
 # → terminal shows a yellow panel; type an answer for each question
 ```
 
-### Exercise 4 — Structured PostgreSQL audit trail (`exercise_4_audit.py`)
+### Exercise 4 — Structured SQLite audit trail (`exercise_4_audit.py`)
 
-Needs Postgres running (`./start_all.sh`). Swap `MemorySaver` for `AsyncPostgresSaver` so the graph can resume after a crash, **and** at every meaningful node event, write one structured row to `audit_events` using the `AuditEntry` Pydantic model defined in `common/schemas.py`:
+Use `AsyncSqliteSaver` so the graph can resume after a crash, **and** at every meaningful node event, write one structured row to `audit_events` using the `AuditEntry` Pydantic model defined in `common/schemas.py`:
 
 ```python
 class AuditEntry(BaseModel):
@@ -168,7 +166,7 @@ SELECT AVG(confidence) FROM audit_events WHERE decision = 'approve';
 SELECT * FROM audit_events WHERE risk_level = 'high' AND decision = 'auto';   -- shouldn't happen!
 ```
 
-**You implement:** the `audit(...)` helper (calls `write_audit_event(_pool, thread_id=..., pr_url=..., entry=AuditEntry(...))`), construct an `AuditEntry` in every node (a skeleton with all fields is commented above each TODO), and replace `MemorySaver` with `AsyncPostgresSaver.from_conn_string(database_url())` inside an `async with` block.
+**You implement:** the `audit(...)` helper (calls `write_audit_event(thread_id=..., pr_url=..., entry=AuditEntry(...))`) and construct an `AuditEntry` in every node. The `AsyncSqliteSaver` and resume loop are already wired for you in `run()`.
 
 ```bash
 uv run python exercises/exercise_4_audit.py --pr https://github.com/VinUni-AI20k/PR-Demo/pull/1
@@ -179,12 +177,12 @@ uv run python -m audit.replay --list   # see recent threads
 
 #### Why two storage mechanisms?
 
-| Mechanism                              | Purpose                              | Schema             | Audience          |
-|----------------------------------------|---------------------------------------|--------------------|-------------------|
-| LangGraph **checkpointer** (Postgres)  | Resume graph after crash, time-travel | Binary blob        | LangGraph runtime |
-| Table **`audit_events`**               | Structured decision log               | First-class columns (queryable) | Auditors, humans  |
+| Mechanism                            | Purpose                              | Schema             | Audience          |
+|--------------------------------------|---------------------------------------|--------------------|-------------------|
+| LangGraph **checkpointer** (SQLite)  | Resume graph after crash, time-travel | Binary blob        | LangGraph runtime |
+| Table **`audit_events`**             | Structured decision log               | First-class columns (queryable) | Auditors, humans  |
 
-The assignment line "ghi vào PostgreSQL audit trail" is fulfilled by `audit_events`. The checkpointer is a free bonus from using `AsyncPostgresSaver`.
+Both live in the same `./hitl_audit.db` file. The assignment line "ghi vào audit trail" is fulfilled by `audit_events`. The checkpointer is a free bonus from using `AsyncSqliteSaver`.
 
 ## How the assignment maps to files
 
@@ -194,7 +192,7 @@ The assignment line "ghi vào PostgreSQL audit trail" is fulfilled by `audit_eve
 | Confidence-based routing (72% vs 58% etc.)            | `common/schemas.py` thresholds + `exercise_1`      |
 | 72% → diff + reasoning → user approves → commit       | `exercise_2_hitl.py`                                |
 | 58% → escalate with specific questions                | `exercise_3_escalation.py`                          |
-| PostgreSQL audit trail + replay full session          | `exercise_4_audit.py`, `audit/schema.sql`, `audit/replay.py` |
+| Audit trail + replay full session                     | `exercise_4_audit.py`, `audit/schema.sql`, `audit/replay.py` |
 
 ## Bonus challenges
 
@@ -220,11 +218,13 @@ Token lacks `public_repo` scope, or repo is private and you only have `public_re
 **LLM stays overconfident on PR #2 and never escalates.**
 Temporarily raise `ESCALATE_THRESHOLD` in `common/schemas.py` to 0.75 to force the branch.
 
-**Postgres won't connect.**
-`docker compose ps` to confirm the container is up; `docker compose logs postgres` for errors. The host port is **1505** (not 5432) — see `docker-compose.yml`. `DATABASE_URL` in `.env` must use 1505.
-
-**`audit_events` schema is stale / column missing.**
-The `audit/schema.sql` file is loaded by docker via `docker-entrypoint-initdb.d` only on **first** container start. If you change the schema, wipe the volume and restart:
+**`audit_events` schema is stale after a code change.**
+The schema is created idempotently on first connection. To reset state completely, just delete the file:
 ```bash
-docker compose down -v && ./start_all.sh
+rm hitl_audit.db
+```
+
+**Open the SQLite file to inspect manually.**
+```bash
+sqlite3 hitl_audit.db "SELECT action, confidence, decision, reviewer_id FROM audit_events ORDER BY id;"
 ```

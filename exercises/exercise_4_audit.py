@@ -1,8 +1,11 @@
-"""Exercise 4 — Structured PostgreSQL audit trail + durable checkpointer.
+"""Exercise 4 — Structured SQLite audit trail + durable checkpointer.
 
-Requires Postgres to be running (./start_all.sh). Goals:
+Zero setup — SQLite stores everything in a single file (`./hitl_audit.db`).
+The audit_events schema is created automatically on first connection.
 
-1. Replace MemorySaver with AsyncPostgresSaver so the graph can resume after a crash.
+Goals:
+
+1. Use AsyncSqliteSaver so the graph can resume after a crash.
 2. Define and emit an `AuditEntry` (common/schemas.py) for every meaningful step,
    so the full session can be replayed.
 3. Verify with `uv run python -m audit.replay --thread <id>`.
@@ -29,13 +32,13 @@ import time
 import uuid
 
 from dotenv import load_dotenv
-from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 from rich.console import Console
 from rich.panel import Panel
 
-from common.db import database_url, pg_pool, write_audit_event
+from common.db import db_path, write_audit_event
 from common.github import fetch_pr
 from common.llm import get_llm
 from common.schemas import (
@@ -50,7 +53,6 @@ from common.schemas import (
 
 console = Console()
 AGENT_ID = "pr-review-agent@v0.1"
-_pool = None  # set in run()
 
 
 async def audit(state, entry: AuditEntry) -> None:
@@ -59,9 +61,7 @@ async def audit(state, entry: AuditEntry) -> None:
     `thread_id` and `pr_url` are taken from `state` so callers only build
     the entry itself.
     """
-    if _pool is None:
-        return
-    # TODO: call write_audit_event(_pool, thread_id=state["thread_id"],
+    # TODO: call write_audit_event(thread_id=state["thread_id"],
     #                              pr_url=state["pr_url"], entry=entry)
     raise NotImplementedError("Implement the audit() body — one call to write_audit_event")
 
@@ -223,24 +223,21 @@ def handle_interrupt(payload):
 
 
 async def run(pr_url: str, thread_id: str | None):
-    global _pool
     thread_id = thread_id or str(uuid.uuid4())
     console.print(f"thread_id = {thread_id}")
 
-    async with pg_pool() as pool:
-        _pool = pool
-        async with AsyncPostgresSaver.from_conn_string(database_url()) as cp:
-            await cp.setup()
-            app = build_graph(cp)
-            cfg = {"configurable": {"thread_id": thread_id}}
+    async with AsyncSqliteSaver.from_conn_string(db_path()) as cp:
+        await cp.setup()
+        app = build_graph(cp)
+        cfg = {"configurable": {"thread_id": thread_id}}
 
-            result = await app.ainvoke({"pr_url": pr_url, "thread_id": thread_id}, cfg)
-            while "__interrupt__" in result:
-                payload = result["__interrupt__"][0].value
-                result = await app.ainvoke(Command(resume=handle_interrupt(payload)), cfg)
+        result = await app.ainvoke({"pr_url": pr_url, "thread_id": thread_id}, cfg)
+        while "__interrupt__" in result:
+            payload = result["__interrupt__"][0].value
+            result = await app.ainvoke(Command(resume=handle_interrupt(payload)), cfg)
 
-            console.print(f"final = {result.get('final_action')}")
-            console.print(f"Replay: uv run python -m audit.replay --thread {thread_id}")
+        console.print(f"final = {result.get('final_action')}")
+        console.print(f"Replay: uv run python -m audit.replay --thread {thread_id}")
 
 
 def main():
